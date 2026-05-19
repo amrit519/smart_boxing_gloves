@@ -1,5 +1,9 @@
-import React, { useState, useEffect, useCallback, createContext, useContext, useRef } from 'react';
-import { StyleSheet, View, TouchableOpacity, TextInput, Alert, ScrollView } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import {
+  StyleSheet, View, TouchableOpacity,
+  TextInput, Alert, ScrollView,
+} from 'react-native';
+import { useHardware } from '@/context/sethardware';
 import { ThemedText } from '@/components/ThemedText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, THEME_COLOR } from '@/constants/Colors';
@@ -7,239 +11,216 @@ import { useTheme } from '@/context/ThemeContext';
 import { useAppSelector } from '@/store/hooks';
 import { useBluetooth } from '@/hooks/useBluetooth';
 import { IconSymbol } from '@/components/ui/IconSymbol';
-import { useHardware } from "../../context/sethardware";
 import { bluetoothService } from '@/utils/bluetooth';
 import { Subscription } from 'react-native-ble-plx';
-import { initDatabase, startSession,savePunchEvent, endSession, saveBatch, SessionSummary }  from '../../types/db'
-import { exportSession, shareSession } from '../../types/export';
+import {
+  initDatabase, startSession, endSession,
+  saveBatch, SessionSummary, RawPacket,
+} from '../../types/db';
+import { shareSession } from '../../types/export';
 
-
-
-// --- ESP32 CONFIGURATION ---
-// Replace these with the actual UUIDs from your ESP32 code 
 const ESP_SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
 const ESP_CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
-
-// ---------------------------
-
-const sensorBuffer: any[] = [];
-
-// ── Hardware data shape ──────────────────────────────────────────────────────
-type HardwareData = {
-  rawJson:   string;
-  punch:     number;
-  power:     number;   // force_n
-  speed:     number;   // speed_ms
-  peak_g:    number;
-  punchType: string;
-  bestSpeed: number;
-  bestForce: number;
-};
-
-const DEFAULT_HARDWARE: HardwareData = {
-  rawJson:   '',
-  punch:     0,
-  power:     0,
-  speed:     0,
-  peak_g:    0,
-  punchType: '',
-  bestSpeed: 0,
-  bestForce: 0,
-};
-
+const TARGET_DEVICE_NAME = 'ESP32_RIGHT_RELAY';
 
 export default function ConnectScreen() {
   const { isDarkMode } = useTheme();
   const theme = isDarkMode ? Colors.dark : Colors.light;
-  const [imeiInput, setImeiInput] = useState('');
-  const { isConnected, deviceName } = useAppSelector(state => state.connection);
+
+  const { isConnected, deviceName } = useAppSelector(s => s.connection);
   const { devices: scannedDevices, connect, disconnect, scanDevices } = useBluetooth();
 
+  const [imeiInput, setImeiInput] = useState('');
   const [isScanning, setIsScanning] = useState(false);
   const [imeiVerified, setImeiVerified] = useState<boolean | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [isFetching, setIsFetching] = useState(false);
   const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
-
-
-   const subscriptionRef = useRef<Subscription | null>(null);
-  const flushIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const currentSessionId = useRef<string | null>(null); // NOT state — no re-render needed
-
   const [isRecording, setIsRecording] = useState(false);
-  const [hardwareData, setHardwareData] = useState<HardwareData>(DEFAULT_HARDWARE);
+  const isRecordingRef = useRef(false);
   const [summary, setSummary] = useState<SessionSummary | null>(null);
 
-  
+  // Live display values — read directly from ESP32 JSON
+  const [liveData, setLiveData] = useState({
+    l_speed: 0, l_force_n: 0, l_punch_cnt: 0,
+    l_best_spd: 0, l_best_frc: 0, l_punch_type: '',
+    r_speed: 0, r_force_n: 0, r_punch_cnt: 0,
+    r_best_spd: 0, r_best_frc: 0, r_punch_type: '',
+    ts: 0,
+  });
 
-  // 1. Wrap the function in useCallback to stabilize it
-  // const fetchEsp32Data = useCallback(async (deviceId: any) => {
-  //   if (isFetchingRef.current) return; // Prevent overlapping calls
+  const subscriptionRef = useRef<Subscription | null>(null);
+  const flushIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const currentSessionId = useRef<string | null>(null);
+  const sensorBuffer = useRef<RawPacket[]>([]);
 
-  //   try {
-  //     isFetchingRef.current = true;
+  const { setHardwareData } = useHardware();
 
-  //     // Read the characteristic value
-  //     const value = await bluetoothService.readCharacteristic(
-  //       deviceId,
-  //       ESP_SERVICE_UUID,
-  //       ESP_CHARACTERISTIC_UUID
-  //     );
-
-  //     if (!value) {
-  //        console.log('No value returned from characteristic');
-  //       return;
-  //     };
-
-  //     // BLE data comes as Base64, decode it
-  //     const decodedData = atob(value).trim();
-  //     console.log('Decoded raw:', decodedData)
-
-  //     const parsed = JSON.parse(decodedData);
-
-  //     // Safely extract data from the LEFT HAND
-
-  //     setHardwareData({
-  //       speed: parsed.best_speed || 0,
-  //       punch: parsed.punch || 0,
-  //       power: parsed.force_n || 0,
-  //     }); // Auto-fill the input
-      
-  //   } catch (error: any) {
-  //     // Don't spam console on every failed poll
-  //     if (error?.message?.includes('rejected')) {
-  //       console.warn('Read rejected — device may be busy');
-  //     } else {
-  //       console.error('Failed to read ESP32 data:', error);
-  //     }
-  //   } finally {
-  //     isFetchingRef.current = false;
-  //   }
-  // }, []); // Dependencies
-
-  // ── 1. Init DB once + pre-create first session ───────────────────────────
+  // ── Init DB on mount ──────────────────────────────────────────────────────
   useEffect(() => {
     initDatabase();
-    const sessionId = startSession();
-    currentSessionId.current = sessionId;
-    console.log('DB ready. First session pre-created:', sessionId);
+    currentSessionId.current = startSession();
+    console.log('DB ready. Session:', currentSessionId.current);
   }, []);
 
-
- useEffect(() => {
+  // ── BLE monitor — starts when device connects ─────────────────────────────
+  useEffect(() => {
     if (!connectedDeviceId) return;
 
-    console.log('Starting BLE monitor for device:', connectedDeviceId);
-
-    // ── Start the 500ms flush interval ─────────────────────────────────────
+    // Start 500ms flush interval
     flushIntervalRef.current = setInterval(async () => {
-      if (!currentSessionId.current)   return;
-      if (sensorBuffer.length === 0)   return;
+      if (!currentSessionId.current) return;
+      if (sensorBuffer.current.length === 0) return;
 
-      const batch = [...sensorBuffer];
-      sensorBuffer.length = 0;
+      const batch = [...sensorBuffer.current];
+      sensorBuffer.current = [];
 
       try {
         await saveBatch(batch, currentSessionId.current);
-        console.log(`Flushed ${batch.length} rows → SQLite`);
+        console.log(`✅ Flushed ${batch.length} rows`);
       } catch (e) {
-        console.error('Batch save failed:', e);
+       
       }
-    }, 500);
+    }, 100);
 
-    // ── Subscribe to BLE notifications ─────────────────────────────────────
+    // Subscribe to BLE notifications
     subscriptionRef.current = bluetoothService.monitorCharacteristic(
       connectedDeviceId,
       ESP_SERVICE_UUID,
       ESP_CHARACTERISTIC_UUID,
       (error, characteristic) => {
-        if (error) {
-          console.warn('Monitor error:', error);
-          return;
-        }
+        if (error) { console.warn('BLE error:', error); return; }
         if (!characteristic?.value) return;
 
         try {
-          const decodedData = atob(characteristic.value).trim();
-          const parsed      = JSON.parse(decodedData);
+          const decoded = atob(characteristic.value).trim();
+          const parsed = JSON.parse(decoded) as RawPacket;
 
-          const isPunchEvent = 'speed_ms' in parsed;
-          const isRawStream  = 'L' in parsed && 'R' in parsed;
-
-          // ── RAW IMU stream packet ─────────────────────────────────────
-          if (isRawStream) {
-            setHardwareData(prev => ({ ...prev, rawJson: decodedData }));
-
-            if (currentSessionId.current) {
-              sensorBuffer.push(parsed);
-              // Safety cap — drop oldest if flush is stalling
-              if (sensorBuffer.length > 500) sensorBuffer.shift();
-            } else {
-              console.warn('RAW: no session ID — skipping buffer');
-            }
-
-          // ── PUNCH EVENT packet ────────────────────────────────────────
-          } else if (isPunchEvent) {
-            console.log('🥊 PUNCH EVENT received:', parsed);
-
-            setHardwareData(prev => ({
-              ...prev,
-              punch:     parsed.punch     ?? prev.punch,
-              power:     parsed.force_n   ?? prev.power,
-              speed:     parsed.speed_ms  ?? prev.speed,
-              peak_g:    parsed.peak_g    ?? prev.peak_g,
-              punchType: parsed.type      ?? prev.punchType,
-              bestSpeed: parsed.best_speed ?? prev.bestSpeed,
-              bestForce: parsed.best_force ?? prev.bestForce,
-            }));
-
-            if (currentSessionId.current) {
-              savePunchEvent(currentSessionId.current, parsed)
-                .then(() => console.log('Punch saved to DB ✓'))
-                .catch(e  => console.error('Punch save FAILED:', e));
-            } else {
-              console.warn('PUNCH: no session ID — punch not saved!');
-            }
-
-          } else {
-            console.warn('Unknown packet shape, keys:', Object.keys(parsed));
+          // Must have L and R keys — that's the only packet shape we expect now
+          if (!('L' in parsed) || !('R' in parsed)) {
+            console.warn('Unexpected packet shape:', Object.keys(parsed));
+            return;
           }
 
-        } catch (e) {
-          console.log('JSON parse failed — waiting for valid packet');
+          // ── Update shared context — Practice screen reads this ─────────
+          setHardwareData({
+            speed: parsed.L?.speed ?? 0,
+            punch: (parsed.L?.punch_cnt ?? 0) + (parsed.R?.punch_cnt ?? 0),
+            power: parsed.L?.force_n ?? 0,
+            l_ax: parsed.L?.ax ?? 0,
+            l_ay: parsed.L?.ay ?? 0,
+            l_az: parsed.L?.az ?? 0,
+            l_gx: parsed.L?.gx ?? 0,
+            l_gy: parsed.L?.gy ?? 0,
+            l_gz: parsed.L?.gz ?? 0,
+            l_mag: parsed.L?.mag ?? 0,
+            l_speed: parsed.L?.speed ?? 0,
+            l_punch: parsed.L?.punch ?? 0,
+            l_punch_cnt: parsed.L?.punch_cnt ?? 0,
+            l_force_n: parsed.L?.force_n ?? 0,
+            l_peak_g: parsed.L?.peak_g ?? 0,
+            l_punch_type: parsed.L?.punch_type ?? '',
+            l_best_spd: parsed.L?.best_spd ?? 0,
+            l_best_frc: parsed.L?.best_frc ?? 0,
+            r_ax: parsed.R?.ax ?? 0,
+            r_ay: parsed.R?.ay ?? 0,
+            r_az: parsed.R?.az ?? 0,
+            r_gx: parsed.R?.gx ?? 0,
+            r_gy: parsed.R?.gy ?? 0,
+            r_gz: parsed.R?.gz ?? 0,
+            r_mag: parsed.R?.mag ?? 0,
+            r_speed: parsed.R?.speed ?? 0,
+            r_punch: parsed.R?.punch ?? 0,
+            r_punch_cnt: parsed.R?.punch_cnt ?? 0,
+            r_force_n: parsed.R?.force_n ?? 0,
+            r_peak_g: parsed.R?.peak_g ?? 0,
+            r_punch_type: parsed.R?.punch_type ?? '',
+            r_best_spd: parsed.R?.best_spd ?? 0,
+            r_best_frc: parsed.R?.best_frc ?? 0,
+            ts: parsed.ts ?? 0,
+          });
+
+          // ── Update local screen UI ─────────────────────────────────────
+          setLiveData({
+            l_speed: parsed.L?.speed ?? 0,
+            l_force_n: parsed.L?.force_n ?? 0,
+            l_punch_cnt: parsed.L?.punch_cnt ?? 0,
+            l_best_spd: parsed.L?.best_spd ?? 0,
+            l_best_frc: parsed.L?.best_frc ?? 0,
+            l_punch_type: parsed.L?.punch_type ?? '',
+            r_speed: parsed.R?.speed ?? 0,
+            r_force_n: parsed.R?.force_n ?? 0,
+            r_punch_cnt: parsed.R?.punch_cnt ?? 0,
+            r_best_spd: parsed.R?.best_spd ?? 0,
+            r_best_frc: parsed.R?.best_frc ?? 0,
+            r_punch_type: parsed.R?.punch_type ?? '',
+            ts: parsed.ts ?? 0,
+          });
+
+          // Push to buffer — always, session was pre-created on mount
+          sensorBuffer.current.push(parsed);
+          if (sensorBuffer.current.length > 500) {
+            sensorBuffer.current.shift();
+          }
+
+        } catch {
+          // Partial / malformed packet — wait for next one
         }
       }
     );
-      // ── Cleanup when device disconnects or changes ────────────────────────
-    return () => {
-      console.log('Cleaning up BLE monitor');
 
-      // Stop flush interval
+    return () => {
       if (flushIntervalRef.current) {
         clearInterval(flushIntervalRef.current);
         flushIntervalRef.current = null;
       }
-
-      // Final flush — save whatever is still in buffer
-      if (sensorBuffer.length > 0 && currentSessionId.current) {
-        saveBatch([...sensorBuffer], currentSessionId.current)
+      // Final flush before cleanup
+      if (sensorBuffer.current.length > 0 && currentSessionId.current) {
+        saveBatch([...sensorBuffer.current], currentSessionId.current)
           .catch(e => console.error('Final flush failed:', e));
-        sensorBuffer.length = 0;
+        sensorBuffer.current = [];
       }
-
-      // Stop BLE subscription
       subscriptionRef.current?.remove();
       subscriptionRef.current = null;
+
+
+      // Reset context so Practice shows zeros when glove disconnects
+      setHardwareData({
+        speed: 0, punch: 0, power: 0,
+        l_ax: 0, l_ay: 0, l_az: 0, l_gx: 0, l_gy: 0, l_gz: 0,
+        l_mag: 0, l_speed: 0, l_punch: 0, l_punch_cnt: 0,
+        l_force_n: 0, l_peak_g: 0, l_punch_type: '',
+        l_best_spd: 0, l_best_frc: 0,
+        r_ax: 0, r_ay: 0, r_az: 0, r_gx: 0, r_gy: 0, r_gz: 0,
+        r_mag: 0, r_speed: 0, r_punch: 0, r_punch_cnt: 0,
+        r_force_n: 0, r_peak_g: 0, r_punch_type: '',
+        r_best_spd: 0, r_best_frc: 0,
+        ts: 0,
+      });
     };
   }, [connectedDeviceId]);
 
+  const handleSendResetCommand = async () => {
+    if (!connectedDeviceId) {
+      console.warn('Cannot send reset command: No device connected');
+      return;
+    }
+    const base64Value = btoa("r");
+    const success = await bluetoothService.writeCharacteristic(
+      connectedDeviceId,
+      ESP_SERVICE_UUID,
+      ESP_CHARACTERISTIC_UUID,
+      base64Value
+    );
+    console.log('Reset command sent:', success);
+  };
+
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleScan = async () => {
     setIsScanning(true);
     await scanDevices(5000);
     setIsScanning(false);
   };
-
 
   const handleConnect = async (device: { id: string; name: string }) => {
     setConnectingId(device.id);
@@ -251,34 +232,21 @@ export default function ConnectScreen() {
     }
   };
 
-
   const handleVerifyIMEI = () => {
-    // Prototype: accept any 15-digit IMEI or "demo"
-    if (imeiInput.toLowerCase() === 'demo' || imeiInput.length === 15) {
-      setImeiVerified(true);
-    } else {
-      setImeiVerified(false);
-    }
+    setImeiVerified(
+      imeiInput.toLowerCase() === 'demo' || imeiInput.length === 15
+    );
   };
 
-// Start Round button — just marks UI as recording
-const handleStartRound = () => {
-  sensorBuffer.length = 0; // clear any pre-session data
-  setIsRecording(true);
-  setSummary(null);
-   console.log('Round started. Session:', currentSessionId.current);
-};
+  const handleStartRound = () => {
+    sensorBuffer.current = [];   // discard pre-round data
+    setIsRecording(true);
+    setSummary(null);
+    console.log('▶ Round started. Session:', currentSessionId.current);
+  };
 
-
-    // ── End Round ─────────────────────────────────────────────────────────────
-// End Round — exports and creates next session
- const handleEndRound = async () => {
-    if (!currentSessionId.current) {
-      console.warn('End round called but no session ID');
-      return;
-    }
-
-    console.log('Ending round for session:', currentSessionId.current);
+  const handleEndRound = async () => {
+    if (!currentSessionId.current) return;
 
     // Stop flush interval
     if (flushIntervalRef.current) {
@@ -286,23 +254,18 @@ const handleStartRound = () => {
       flushIntervalRef.current = null;
     }
 
-    // Final flush of remaining buffer
-    if (sensorBuffer.length > 0) {
-      await saveBatch([...sensorBuffer], currentSessionId.current)
-        .catch(e => console.error('Final batch save failed:', e));
-      sensorBuffer.length = 0;
+    // Final flush
+    if (sensorBuffer.current.length > 0) {
+      await saveBatch([...sensorBuffer.current], currentSessionId.current)
+        .catch(e => console.error('Final batch failed:', e));
+      sensorBuffer.current = [];
     }
 
-    // Verify what was saved — helps debug empty files
-    console.log('=== SESSION SUMMARY ===');
-    console.log('Session ID:', currentSessionId.current);
-    console.log('=======================');
-
-    // Close session in DB
+    // Close session + get summary
     const sessionSummary = endSession(currentSessionId.current);
     setSummary(sessionSummary);
 
-    // Export + share both CSV files
+    // Export CSV and share
     try {
       await shareSession(currentSessionId.current);
     } catch (e) {
@@ -310,19 +273,15 @@ const handleStartRound = () => {
       Alert.alert('Export failed', String(e));
     }
 
-    // Pre-create next session immediately so ref is never null
-    const nextSessionId = startSession();
-    currentSessionId.current = nextSessionId;
-    console.log('Next session ready:', nextSessionId);
+    // Pre-create next session so buffer never has a null sessionId
+    currentSessionId.current = startSession();
 
-    // Restart flush interval for the new session
+    // Restart flush interval for next round
     flushIntervalRef.current = setInterval(async () => {
-      if (!currentSessionId.current)  return;
-      if (sensorBuffer.length === 0)  return;
-
-      const batch = [...sensorBuffer];
-      sensorBuffer.length = 0;
-
+      if (!currentSessionId.current) return;
+      if (sensorBuffer.current.length === 0) return;
+      const batch = [...sensorBuffer.current];
+      sensorBuffer.current = [];
       await saveBatch(batch, currentSessionId.current)
         .catch(e => console.error('Batch save failed:', e));
     }, 500);
@@ -330,10 +289,14 @@ const handleStartRound = () => {
     setIsRecording(false);
   };
 
+  // ── Filtered device list ──────────────────────────────────────────────────
+  const targetDevices = scannedDevices.filter(d => d.name === TARGET_DEVICE_NAME);
 
+  // ── UI ────────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+
         {/* Header */}
         <View style={styles.header}>
           <ThemedText style={styles.gloveEmoji}>🥊</ThemedText>
@@ -345,106 +308,75 @@ const handleStartRound = () => {
               ? `${deviceName || 'Glove'} is ready for action`
               : 'Pair your boxing gloves via Bluetooth'}
           </ThemedText>
-
-          <ThemedText style={{ color: theme.text }}>
-            {hardwareData.speed} | {hardwareData.power} | {hardwareData.punch}
-          </ThemedText>
         </View>
 
-        {/** ble provider */}
-
-
-
-        {/* Connection Status */}
+        {/* Connection card / scan */}
         {isConnected ? (
           <View style={[styles.connectedCard, { backgroundColor: theme.surface, borderColor: theme.success + '40' }]}>
             <View style={styles.connectedHeader}>
               <View style={[styles.statusDot, { backgroundColor: theme.success }]} />
-              <ThemedText style={[styles.connectedLabel, { color: theme.success }]}>
-                Connected
-              </ThemedText>
+              <ThemedText style={[styles.connectedLabel, { color: theme.success }]}>Connected</ThemedText>
             </View>
             <ThemedText style={styles.deviceNameLarge}>{deviceName || 'Boxing Glove'}</ThemedText>
 
-            {/* IMEI Verification */}
+            {/* IMEI */}
             <View style={styles.imeiSection}>
-              <View style={styles.imeiRowHeader}>
-                <ThemedText style={[styles.imeiLabel, { color: theme.secondary }]}>
-                  Hardware Verification (IMEI)
-                </ThemedText>
-                {/* New Button to manually fetch data again */}
-                <TouchableOpacity
-                  onPress={() => {
-                    if (subscriptionRef.current) {
-                      subscriptionRef.current.remove();
-                      subscriptionRef.current = null;
-                    }
-                  }}
-                  disabled={isFetching}
-                >
-                  <ThemedText style={[styles.fetchLink, { color: THEME_COLOR }]}>
-                    {isFetching ? 'Reading...' : 'Re-read Hardware'}
-                  </ThemedText>
-                </TouchableOpacity>
-              </View>
-
+              <ThemedText style={[styles.imeiLabel, { color: theme.secondary }]}>
+                Hardware Verification (IMEI)
+              </ThemedText>
               <View style={styles.imeiRow}>
                 <TextInput
-                  style={[styles.imeiInput, { color: theme.text, borderColor: theme.border, backgroundColor: theme.surfaceContainer }]}
+                  style={[styles.imeiInput, {
+                    color: theme.text,
+                    borderColor: theme.border,
+                    backgroundColor: theme.surfaceContainer,
+                  }]}
                   placeholder="IMEI or 'demo'"
                   placeholderTextColor={theme.secondary}
                   value={imeiInput}
                   onChangeText={setImeiInput}
                 />
-                <TouchableOpacity
-                  style={[styles.verifyButton]}
-                  onPress={handleVerifyIMEI}
-                >
+                <TouchableOpacity style={styles.verifyButton} onPress={handleVerifyIMEI}>
                   <ThemedText style={styles.verifyButtonText}>Verify</ThemedText>
                 </TouchableOpacity>
               </View>
-              {imeiVerified === true && (
-                <View style={styles.verifiedBadge}>
-                  <ThemedText style={styles.verifiedText}>✅ Hardware Verified</ThemedText>
-                </View>
-              )}
-              {imeiVerified === false && (
-                <View style={styles.failedBadge}>
-                  <ThemedText style={styles.failedText}>❌ Hardware Not Verified</ThemedText>
-                </View>
-              )}
+              {imeiVerified === true && <View style={styles.verifiedBadge}><ThemedText style={styles.verifiedText}>✅ Hardware Verified</ThemedText></View>}
+              {imeiVerified === false && <View style={styles.failedBadge}><ThemedText style={styles.failedText}>❌ Not Verified</ThemedText></View>}
             </View>
 
+            <TouchableOpacity style={[styles.disconnectButton, { borderColor: theme.danger }]} onPress={() => disconnect()}>
+              <ThemedText style={[styles.disconnectText, { color: theme.danger }]}>Disconnect Gloves</ThemedText>
+            </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.disconnectButton, { borderColor: theme.danger }]}
-              onPress={() => disconnect()}
+              style={{
+                width: 250,
+                height: 40,
+                backgroundColor: "#dc143c", // Crimson Red
+                borderRadius: 20, // pill shape
+                justifyContent: "center",
+                alignItems: "center",
+                alignSelf: "center",
+                marginTop: 10,
+                borderWidth: 1,
+                borderColor: theme.danger,
+              }}
+              onPress={handleSendResetCommand}
+              disabled={!connectedDeviceId}
             >
-              <ThemedText style={[styles.disconnectText, { color: theme.danger }]}>
-                Disconnect Gloves
-              </ThemedText>
+              <ThemedText style={{ color: theme.text }}>Reset Gloves</ThemedText>
             </TouchableOpacity>
           </View>
         ) : (
           <>
-            {/* Scan Button */}
-            <TouchableOpacity
-              style={[styles.scanButton, isScanning && styles.scanButtonActive]}
-              onPress={handleScan}
-              disabled={isScanning}
-            >
+            <TouchableOpacity style={[styles.scanButton, isScanning && styles.scanButtonActive]} onPress={handleScan} disabled={isScanning}>
               <IconSymbol name="search" size={18} color="white" />
-              <ThemedText style={styles.scanButtonText}>
-                {isScanning ? 'Scanning...' : 'Scan for Gloves'}
-              </ThemedText>
+              <ThemedText style={styles.scanButtonText}>{isScanning ? 'Scanning...' : 'Scan for Gloves'}</ThemedText>
             </TouchableOpacity>
 
-            {/* Discovered Devices */}
-            {scannedDevices.length > 0 && (
+            {targetDevices.length > 0 && (
               <View style={styles.devicesSection}>
-                <ThemedText style={[styles.sectionTitle, { color: theme.text }]}>
-                  Nearby Devices
-                </ThemedText>
-                {scannedDevices.map(device => (
+                <ThemedText style={[styles.sectionTitle, { color: theme.text }]}>Nearby Devices</ThemedText>
+                {targetDevices.map(device => (
                   <View key={device.id} style={[styles.deviceItem, { backgroundColor: theme.surface, borderColor: theme.border }]}>
                     <View style={styles.deviceInfo}>
                       <View style={[styles.deviceIcon, { backgroundColor: THEME_COLOR + '20' }]}>
@@ -469,12 +401,10 @@ const handleStartRound = () => {
               </View>
             )}
 
-            {scannedDevices.length === 0 && !isScanning && (
+            {targetDevices.length === 0 && !isScanning && (
               <View style={[styles.emptyState, { backgroundColor: theme.surface, borderColor: theme.border }]}>
                 <ThemedText style={{ fontSize: 40, marginBottom: 12 }}>👆</ThemedText>
-                <ThemedText style={[styles.emptyTitle, { color: theme.text }]}>
-                  Tap 'Scan for Gloves'
-                </ThemedText>
+                <ThemedText style={[styles.emptyTitle, { color: theme.text }]}>Tap 'Scan for Gloves'</ThemedText>
                 <ThemedText style={[styles.emptySubtitle, { color: theme.secondary }]}>
                   Make sure your gloves are powered on and in pairing mode
                 </ThemedText>
@@ -483,47 +413,103 @@ const handleStartRound = () => {
           </>
         )}
 
-           {/* Live sensor display */}
-      <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
-        <ThemedText style={[styles.label, { color: theme.secondary }]}>Left punch force</ThemedText>
-        <ThemedText style={[styles.value, { color: theme.text }]}>{hardwareData.power.toFixed(2)} N</ThemedText>
-      </View>
+        {/* Live data card — values straight from ESP32, no calculations */}
+        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <ThemedText style={[styles.cardTitle, { color: theme.text }]}>Live Glove Data</ThemedText>
 
-      {/* Start / End button */}
-      <TouchableOpacity
-        style={[styles.button, isRecording ? styles.buttonStop : styles.buttonStart]}
-        onPress={isRecording ? handleEndRound : handleStartRound}
-      >
-        <ThemedText style={styles.buttonText}>
-          {isRecording ? '⏹ End Round' : '▶ Start Round'}
-        </ThemedText>
-      </TouchableOpacity>
+          <View style={styles.dataRow}>
+            <ThemedText style={[styles.dataLabel, { color: theme.secondary }]}>LEFT</ThemedText>
+            <ThemedText style={[styles.dataLabel, { color: theme.secondary }]}>RIGHT</ThemedText>
+          </View>
 
-      {/* Post-session summary */}
-      {summary && (
-        <View style={styles.summary}>
-          <ThemedText style={styles.summaryTitle}>Round complete</ThemedText>
-          <ThemedText style={styles.summaryLine}>
-            Duration: {(summary.durationMs / 1000).toFixed(1)}s
-          </ThemedText>
-          <ThemedText style={styles.summaryLine}>
-            Readings saved: {summary.totalReadings}
-          </ThemedText>
-          <ThemedText style={styles.summaryLine}>
-            Sample rate: {summary.samplesPerSecond} Hz
-          </ThemedText>
+          <View style={styles.dataRow}>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Speed: {liveData.l_speed.toFixed(2)} m/s
+            </ThemedText>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Speed: {liveData.r_speed.toFixed(2)} m/s
+            </ThemedText>
+          </View>
+
+          <View style={styles.dataRow}>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Force: {liveData.l_force_n.toFixed(1)} N
+            </ThemedText>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Force: {liveData.r_force_n.toFixed(1)} N
+            </ThemedText>
+          </View>
+
+          <View style={styles.dataRow}>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Punches: {liveData.l_punch_cnt}
+            </ThemedText>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Punches: {liveData.r_punch_cnt}
+            </ThemedText>
+          </View>
+
+          <View style={styles.dataRow}>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Best: {liveData.l_best_spd.toFixed(2)} m/s
+            </ThemedText>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Best: {liveData.r_best_spd.toFixed(2)} m/s
+            </ThemedText>
+          </View>
+
+          <View style={styles.dataRow}>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Best force: {liveData.l_best_frc.toFixed(1)} N
+            </ThemedText>
+            <ThemedText style={[styles.dataValue, { color: theme.text }]}>
+              Best force: {liveData.r_best_frc.toFixed(1)} N
+            </ThemedText>
+          </View>
+
+          {liveData.l_punch_type !== '' && (
+            <ThemedText style={[styles.punchType, { color: THEME_COLOR }]}>
+              L: {liveData.l_punch_type}
+            </ThemedText>
+          )}
+          {liveData.r_punch_type !== '' && (
+            <ThemedText style={[styles.punchType, { color: THEME_COLOR }]}>
+              R: {liveData.r_punch_type}
+            </ThemedText>
+          )}
         </View>
-      )}
 
+        {/* Start / End Round */}
+        <TouchableOpacity
+          style={[styles.button, isRecording ? styles.buttonStop : styles.buttonStart]}
+          onPress={isRecording ? handleEndRound : handleStartRound}
+        >
+          <ThemedText style={styles.buttonText}>
+            {isRecording ? '⏹ End Round' : '▶ Start Round'}
+          </ThemedText>
+        </TouchableOpacity>
+
+        {/* Post-round summary */}
+        {summary && (
+          <View style={[styles.summary, { backgroundColor: theme.surface }]}>
+            <ThemedText style={[styles.summaryTitle, { color: theme.text }]}>Round complete ✅</ThemedText>
+            <ThemedText style={[styles.summaryLine, { color: theme.secondary }]}>
+              Duration: {(summary.durationMs / 1000).toFixed(1)}s
+            </ThemedText>
+            <ThemedText style={[styles.summaryLine, { color: theme.secondary }]}>
+              Readings saved: {summary.totalReadings}
+            </ThemedText>
+            <ThemedText style={[styles.summaryLine, { color: theme.secondary }]}>
+              Sample rate: {summary.samplesPerSecond} Hz
+            </ThemedText>
+          </View>
+        )}
 
       </ScrollView>
     </SafeAreaView>
-
   );
-};
+}
 
-
-// Styles
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 20, paddingBottom: 40 },
@@ -531,116 +517,52 @@ const styles = StyleSheet.create({
   gloveEmoji: { fontSize: 60, marginBottom: 10 },
   title: { fontSize: 28, fontWeight: 'bold', textAlign: 'center' },
   subtitle: { fontSize: 16, textAlign: 'center', marginTop: 5 },
-  scanButton: {
-    flexDirection: 'row',
-    backgroundColor: THEME_COLOR,
-    paddingVertical: 15,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-    gap: 10,
-  },
+  scanButton: { flexDirection: 'row', backgroundColor: THEME_COLOR, paddingVertical: 15, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginBottom: 20, gap: 10 },
   scanButtonActive: { opacity: 0.7 },
   scanButtonText: { color: 'white', fontSize: 16, fontWeight: '600' },
   devicesSection: { gap: 15 },
   sectionTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 10 },
-  deviceItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 15,
-    borderRadius: 12,
-    borderWidth: 1,
-  },
+  deviceItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 15, borderRadius: 12, borderWidth: 1 },
   deviceInfo: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   deviceIcon: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
   deviceName: { fontSize: 16, fontWeight: '600' },
   deviceId: { fontSize: 12, marginTop: 2 },
-  connectButton: {
-    backgroundColor: THEME_COLOR,
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
+  connectButton: { backgroundColor: THEME_COLOR, paddingHorizontal: 20, paddingVertical: 8, borderRadius: 8 },
   connectButtonActive: { backgroundColor: '#ccc' },
   connectButtonText: { color: 'white', fontWeight: '600', fontSize: 14 },
-  emptyState: {
-    padding: 40,
-    borderRadius: 12,
-    alignItems: 'center',
-    borderWidth: 1,
-    marginTop: 20,
-  },
+  emptyState: { padding: 40, borderRadius: 12, alignItems: 'center', borderWidth: 1, marginTop: 20 },
   emptyTitle: { fontSize: 18, fontWeight: '600' },
   emptySubtitle: { fontSize: 14, textAlign: 'center', marginTop: 5 },
-  connectedCard: {
-    padding: 20,
-    borderRadius: 16,
-    borderWidth: 1,
-    alignItems: 'center',
-  },
+  connectedCard: { padding: 20, borderRadius: 16, borderWidth: 1, alignItems: 'center' },
   connectedHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
   statusDot: { width: 10, height: 10, borderRadius: 5 },
   connectedLabel: { fontSize: 14, fontWeight: '600' },
   deviceNameLarge: { fontSize: 24, fontWeight: 'bold', marginBottom: 30 },
   imeiSection: { width: '100%', marginBottom: 20 },
-  imeiRowHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10
-  },
+  imeiRowHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   fetchLink: { fontSize: 12, fontWeight: '600' },
   imeiLabel: { fontSize: 14, marginBottom: 8 },
   imeiRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
-  imeiInput: {
-    flex: 1,
-    height: 100,
-    fontSize: 14,
-  },
-  verifyButton: {
-    backgroundColor: THEME_COLOR,
-    paddingHorizontal: 20,
-    borderRadius: 8,
-    justifyContent: 'center',
-  },
+  imeiInput: { flex: 1, height: 44, borderWidth: 1, borderRadius: 8, paddingHorizontal: 12, fontSize: 14 },
+  verifyButton: { backgroundColor: THEME_COLOR, paddingHorizontal: 20, borderRadius: 8, justifyContent: 'center' },
   verifyButtonText: { color: 'white', fontWeight: '600' },
-  verifiedBadge: {
-    backgroundColor: '#e8f5e9',
-    padding: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#c8e6c9',
-  },
+  verifiedBadge: { backgroundColor: '#e8f5e9', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#c8e6c9' },
   verifiedText: { color: '#2e7d32', fontWeight: '600' },
-  failedBadge: {
-    backgroundColor: '#ffebee',
-    padding: 10,
-    borderRadius: 8,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#ffcdd2',
-  },
+  failedBadge: { backgroundColor: '#ffebee', padding: 10, borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#ffcdd2' },
   failedText: { color: '#c62828', fontWeight: '600' },
-  disconnectButton: {
-    borderWidth: 1,
-    paddingVertical: 12,
-    paddingHorizontal: 30,
-    borderRadius: 8,
-    marginTop: 10,
-  },
+  disconnectButton: { borderWidth: 1, paddingVertical: 12, paddingHorizontal: 30, borderRadius: 8, marginTop: 10 },
   disconnectText: { fontWeight: '600' },
-
-  card: { backgroundColor: '#1a1a1a', borderRadius: 12, padding: 20, marginBottom: 16 },
-  label: { color: '#888', fontSize: 13, marginBottom: 4 },
-  value: { color: '#fff', fontSize: 32, fontWeight: '600' },
+  card: { borderRadius: 12, padding: 20, marginBottom: 16, borderWidth: 1, marginTop: 16 },
+  cardTitle: { fontSize: 16, fontWeight: '600', marginBottom: 12 },
+  dataRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
+  dataLabel: { fontSize: 12, fontWeight: '600', flex: 1 },
+  dataValue: { fontSize: 13, flex: 1 },
+  punchType: { fontSize: 14, fontWeight: '600', marginTop: 8 },
   button: { borderRadius: 12, padding: 18, alignItems: 'center', marginTop: 8 },
   buttonStart: { backgroundColor: '#22c55e' },
   buttonStop: { backgroundColor: '#ef4444' },
   buttonText: { color: '#fff', fontSize: 18, fontWeight: '600' },
-  summary: { backgroundColor: '#1a1a1a', borderRadius: 12, padding: 20, marginTop: 24 },
-  summaryTitle: { color: '#fff', fontSize: 18, fontWeight: '600', marginBottom: 12 },
-  summaryLine: { color: '#aaa', fontSize: 14, marginBottom: 6 },
+  summary: { borderRadius: 12, padding: 20, marginTop: 24, borderWidth: 1 },
+  summaryTitle: { fontSize: 18, fontWeight: '600', marginBottom: 12 },
+  summaryLine: { fontSize: 14, marginBottom: 6 },
 });
