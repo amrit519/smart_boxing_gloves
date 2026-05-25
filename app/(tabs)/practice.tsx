@@ -168,9 +168,9 @@ export default function PracticeScreen() {
   const [useMockData, setUseMockData] = useState(false);
 
   // ── Config ────────────────────────────────────────────────────────────────
-  const [rounds, setRounds] = useState(4);
-  const [roundDuration, setRoundDuration] = useState(180);
-  const [restDuration, setRestDuration] = useState(60);
+  const [rounds, setRounds] = useState(2);
+  const [roundDuration, setRoundDuration] = useState(60);
+  const [restDuration, setRestDuration] = useState(30);
 
   // ── View ──────────────────────────────────────────────────────────────────
   const [gloveView, setGloveView] = useState<'left' | 'both' | 'right'>('both');
