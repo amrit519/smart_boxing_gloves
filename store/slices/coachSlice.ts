@@ -10,7 +10,7 @@ interface CoachState {
 const initialState: CoachState = {
     students: [],
     selectedClub: null,
-    liveStudentIds: [],
+    liveStudentIds: []
 };
 
 const coachSlice = createSlice({

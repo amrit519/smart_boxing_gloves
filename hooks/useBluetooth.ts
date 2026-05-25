@@ -1,15 +1,13 @@
 import { useState, useEffect } from 'react';
 import { Platform, PermissionsAndroid } from 'react-native';
 import { bluetoothService, BluetoothDevice } from '@/utils/bluetooth';
-import { decode as atob } from 'base-64';
-import { useAppDispatch, useAppSelector } from '@/store/hooks';
+import { useAppSelector } from '@/store/hooks';
 
 export const useBluetooth = () => {
   const [devices, setDevices] = useState<BluetoothDevice[]>([]);
   const [readValue, setReadValue] = useState<string | null>(null);
   
   // Use Redux for connected device state and deviceId
-  const dispatch = useAppDispatch();
   const { isConnected, deviceName, deviceId } = useAppSelector(state => state.connection);
 
   // Request location permission for Android API 23+ before scanning

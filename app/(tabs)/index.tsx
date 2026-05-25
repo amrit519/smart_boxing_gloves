@@ -36,7 +36,6 @@ export default function ConnectScreen() {
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [connectedDeviceId, setConnectedDeviceId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const isRecordingRef = useRef(false);
   const [summary, setSummary] = useState<SessionSummary | null>(null);
 
   // Live display values — read directly from ESP32 JSON
@@ -52,6 +51,7 @@ export default function ConnectScreen() {
   const flushIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const currentSessionId = useRef<string | null>(null);
   const sensorBuffer = useRef<RawPacket[]>([]);
+  const isFlushing = useRef(false);
 
   const { setHardwareData } = useHardware();
 
@@ -66,21 +66,33 @@ export default function ConnectScreen() {
   useEffect(() => {
     if (!connectedDeviceId) return;
 
-    // Start 500ms flush interval
+    // Start 5000ms flush interval
     flushIntervalRef.current = setInterval(async () => {
+      // 1. Guard: If we are already flushing, skip this tick to prevent overlap
+      if (isFlushing.current) {
+        console.log('⏳ Previous batch still saving, skipping this cycle...');
+        return;
+      }
+
       if (!currentSessionId.current) return;
       if (sensorBuffer.current.length === 0) return;
 
-      const batch = [...sensorBuffer.current];
-      sensorBuffer.current = [];
+      // 2. Lock and prepare data
+      isFlushing.current = true;
+      const batch = [...sensorBuffer.current]; // Copy data
+      sensorBuffer.current = []; // Clear buffer immediately
 
       try {
-        await saveBatch(batch, currentSessionId.current);
-        console.log(`✅ Flushed ${batch.length} rows`);
+        saveBatch(batch, currentSessionId.current);
+        // console.log(`✅ Flushed ${batch.length} rows`);
       } catch (e) {
-       
+        console.error('Batch save failed:', e);
+        // Optional: If you want to retry failed data, you would push 'batch' back into sensorBuffer here
+      } finally {
+        // 3. Release lock
+        isFlushing.current = false;
       }
-    }, 100);
+    }, 5000);
 
     // Subscribe to BLE notifications
     subscriptionRef.current = bluetoothService.monitorCharacteristic(
@@ -94,7 +106,6 @@ export default function ConnectScreen() {
         try {
           const decoded = atob(characteristic.value).trim();
           const parsed = JSON.parse(decoded) as RawPacket;
-
           // Must have L and R keys — that's the only packet shape we expect now
           if (!('L' in parsed) || !('R' in parsed)) {
             console.warn('Unexpected packet shape:', Object.keys(parsed));
@@ -175,8 +186,9 @@ export default function ConnectScreen() {
       }
       // Final flush before cleanup
       if (sensorBuffer.current.length > 0 && currentSessionId.current) {
-        saveBatch([...sensorBuffer.current], currentSessionId.current)
-          .catch(e => console.error('Final flush failed:', e));
+        try {
+          saveBatch([...sensorBuffer.current], currentSessionId.current)
+        } catch (e) { console.error('Final flush failed:', e); }
         sensorBuffer.current = [];
       }
       subscriptionRef.current?.remove();
@@ -197,7 +209,7 @@ export default function ConnectScreen() {
         ts: 0,
       });
     };
-  }, [connectedDeviceId]);
+  }, [connectedDeviceId, setHardwareData]);
 
   const handleSendResetCommand = async () => {
     if (!connectedDeviceId) {
@@ -256,8 +268,9 @@ export default function ConnectScreen() {
 
     // Final flush
     if (sensorBuffer.current.length > 0) {
-      await saveBatch([...sensorBuffer.current], currentSessionId.current)
-        .catch(e => console.error('Final batch failed:', e));
+      try {
+        saveBatch([...sensorBuffer.current], currentSessionId.current)
+      } catch (e) { console.error('Final batch failed:', e); }
       sensorBuffer.current = [];
     }
 
@@ -273,7 +286,7 @@ export default function ConnectScreen() {
       Alert.alert('Export failed', String(e));
     }
 
-    // Pre-create next session so buffer never has a null sessionId
+    //   // Pre-create next session so buffer never has a null sessionId
     currentSessionId.current = startSession();
 
     // Restart flush interval for next round
@@ -282,9 +295,12 @@ export default function ConnectScreen() {
       if (sensorBuffer.current.length === 0) return;
       const batch = [...sensorBuffer.current];
       sensorBuffer.current = [];
-      await saveBatch(batch, currentSessionId.current)
-        .catch(e => console.error('Batch save failed:', e));
-    }, 500);
+      try {
+        await saveBatch(batch, currentSessionId.current);
+      } catch (e) {
+        console.error('Batch save failed:', e);
+      }
+    }, 5000);
 
     setIsRecording(false);
   };
@@ -320,7 +336,7 @@ export default function ConnectScreen() {
             <ThemedText style={styles.deviceNameLarge}>{deviceName || 'Boxing Glove'}</ThemedText>
 
             {/* IMEI */}
-            <View style={styles.imeiSection}>
+            {/* <View style={styles.imeiSection}>
               <ThemedText style={[styles.imeiLabel, { color: theme.secondary }]}>
                 Hardware Verification (IMEI)
               </ThemedText>
@@ -342,12 +358,12 @@ export default function ConnectScreen() {
               </View>
               {imeiVerified === true && <View style={styles.verifiedBadge}><ThemedText style={styles.verifiedText}>✅ Hardware Verified</ThemedText></View>}
               {imeiVerified === false && <View style={styles.failedBadge}><ThemedText style={styles.failedText}>❌ Not Verified</ThemedText></View>}
-            </View>
-
+            </View> */}
+ 
             <TouchableOpacity style={[styles.disconnectButton, { borderColor: theme.danger }]} onPress={() => disconnect()}>
               <ThemedText style={[styles.disconnectText, { color: theme.danger }]}>Disconnect Gloves</ThemedText>
             </TouchableOpacity>
-            <TouchableOpacity
+            {/* <TouchableOpacity
               style={{
                 width: 250,
                 height: 40,
@@ -364,7 +380,7 @@ export default function ConnectScreen() {
               disabled={!connectedDeviceId}
             >
               <ThemedText style={{ color: theme.text }}>Reset Gloves</ThemedText>
-            </TouchableOpacity>
+            </TouchableOpacity> */}
           </View>
         ) : (
           <>
@@ -414,7 +430,7 @@ export default function ConnectScreen() {
         )}
 
         {/* Live data card — values straight from ESP32, no calculations */}
-        <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        {/* <View style={[styles.card, { backgroundColor: theme.surface, borderColor: theme.border }]}>
           <ThemedText style={[styles.cardTitle, { color: theme.text }]}>Live Glove Data</ThemedText>
 
           <View style={styles.dataRow}>
@@ -477,20 +493,20 @@ export default function ConnectScreen() {
               R: {liveData.r_punch_type}
             </ThemedText>
           )}
-        </View>
+        </View>   */}
 
         {/* Start / End Round */}
-        <TouchableOpacity
+        {/* <TouchableOpacity
           style={[styles.button, isRecording ? styles.buttonStop : styles.buttonStart]}
           onPress={isRecording ? handleEndRound : handleStartRound}
         >
           <ThemedText style={styles.buttonText}>
             {isRecording ? '⏹ End Round' : '▶ Start Round'}
           </ThemedText>
-        </TouchableOpacity>
+        </TouchableOpacity> */}
 
         {/* Post-round summary */}
-        {summary && (
+        {/* {summary && (
           <View style={[styles.summary, { backgroundColor: theme.surface }]}>
             <ThemedText style={[styles.summaryTitle, { color: theme.text }]}>Round complete ✅</ThemedText>
             <ThemedText style={[styles.summaryLine, { color: theme.secondary }]}>
@@ -503,7 +519,7 @@ export default function ConnectScreen() {
               Sample rate: {summary.samplesPerSecond} Hz
             </ThemedText>
           </View>
-        )}
+        )} */}
 
       </ScrollView>
     </SafeAreaView>

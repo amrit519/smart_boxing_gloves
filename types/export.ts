@@ -1,5 +1,4 @@
 import RNFS from 'react-native-fs';
-import * as Sharing from 'expo-sharing';
 import { db } from './db';
 
 // Every column in the same order as sensor_readings table
@@ -77,16 +76,19 @@ export async function shareSession(sessionId: string): Promise<void> {
 
   console.log(`✅ CSV written: ${filePath} (${rows.length} rows)`);
 
-  // 5. Share via native share sheet
-  // expo-sharing requires file:// prefix on Android
-  const fileUri = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
-
-  const canShare = await Sharing.isAvailableAsync();
-  if (!canShare) throw new Error('Sharing not available on this device');
-
-  await Sharing.shareAsync(fileUri, {
-    mimeType:    'text/csv',
-    dialogTitle: `Save boxing session — ${rows.length} readings`,
-    UTI:         'public.comma-separated-values-text',
-  });
 }
+
+
+
+//   // 5. Share via native share sheet
+//   // expo-sharing requires file:// prefix on Android
+//   const fileUri = filePath.startsWith('file://') ? filePath : `file://${filePath}`;
+
+//   const canShare = await Sharing.isAvailableAsync();
+//   if (!canShare) throw new Error('Sharing not available on this device');
+
+//   await Sharing.shareAsync(fileUri, {
+//     mimeType:    'text/csv',
+//     dialogTitle: `Save boxing session — ${rows.length} readings`,
+//     UTI:         'public.comma-separated-values-text',
+//   });
