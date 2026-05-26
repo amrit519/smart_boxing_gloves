@@ -21,6 +21,7 @@ import {
   saveBatch, RawPacket
 } from '../../types/db';
 import { shareSession } from '../../types/export';
+import ConnectScreen from '.';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -690,6 +691,8 @@ export default function PracticeScreen() {
   // ═════════════════════════════════════════════════════════════════════════
 
   return (
+    <>
+    <ConnectScreen /> 
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
 
       {/* HISTORY MODAL */}
@@ -846,7 +849,9 @@ export default function PracticeScreen() {
         </View>
       )}
     </SafeAreaView>
+    </>
   );
+  
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────

@@ -31,13 +31,13 @@ export default function TabLayout() {
           letterSpacing: 0.3,
         },
       }}>
-      <Tabs.Screen
+      {/* <Tabs.Screen
         name="index"
         options={{
           title: 'Connect',
           tabBarIcon: ({ color, size }) => <IconSymbol name="bluetooth" size={size} color={color} />,
         }}
-      />
+      /> */}
       <Tabs.Screen
         name="practice"
         options={{

@@ -15,6 +15,7 @@ import { LoginScreen } from '@/components/auth/LoginScreen';
 import { useAppSelector } from '@/store/hooks';
 import { THEME_COLOR } from '@/constants/Colors'; 
 import { HardwareProvider } from '@/context/sethardware';
+import PracticeScreen from './(tabs)/practice';
 
 
 const lightTheme = {
@@ -65,7 +66,7 @@ function AppContent() {
   return (
     <NavigationThemeProvider value={isDarkMode ? FightDarkTheme : FightLightTheme}>
       <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="(tabs)" options={{ headerShown:false}} />     
         <Stack.Screen name="+not-found" />
       </Stack>
       <StatusBar style={isDarkMode ? 'light' : 'dark'} />
