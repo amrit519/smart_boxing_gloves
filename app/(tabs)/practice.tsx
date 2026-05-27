@@ -17,6 +17,7 @@ import { dismissFatigueAlert } from '@/store/slices/practiceSlice';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useHardware } from '../../context/sethardware';
 import RNFS from 'react-native-fs';
+import * as Sharing from 'expo-sharing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -161,9 +162,9 @@ export default function PracticeScreen() {
   const [useMockData, setUseMockData] = useState(false);
 
   // ── Config ────────────────────────────────────────────────────────────────
-  const [rounds, setRounds] = useState(2);
+  const [rounds, setRounds] = useState(1);
   const [roundDuration, setRoundDuration] = useState(60);
-  const [restDuration, setRestDuration] = useState(20);
+  const [restDuration, setRestDuration] = useState(0);
 
   // ── View ──────────────────────────────────────────────────────────────────
   const [gloveView, setGloveView] = useState<'left' | 'both' | 'right'>('both');
@@ -177,6 +178,8 @@ export default function PracticeScreen() {
   const currentRoundAcc = useRef<RoundAcc>(emptyAcc(new Date()));
   const prevRoundRef = useRef<number>(0);
   const restStartRef = useRef<Date | null>(null);
+  const initialLeftPunchCntRef = useRef<number>(0);
+  const initialRightPunchCntRef = useRef<number>(0);
 
   // ── Session flags ────────────────────────────────────────────────────────
   const [isRecording, setIsRecording] = useState(false);
@@ -265,8 +268,8 @@ export default function PracticeScreen() {
 
       const speedVal = hw.l_speed ?? hw.speed ?? 0;
       const forceVal = hw.l_force_n ?? hw.power ?? 0;
-      const lPunchCnt = hw.l_punch_cnt ?? 0;
-      const rPunchCnt = hw.r_punch_cnt ?? 0;
+      const lPunchCnt = Math.max(0, (hw.l_punch_cnt ?? 0) - initialLeftPunchCntRef.current);
+      const rPunchCnt = Math.max(0, (hw.r_punch_cnt ?? 0) - initialRightPunchCntRef.current);
 
       // ⭐ Removed the aggressive "skip if speed AND force are 0" filter.
       // It was filtering out valid packets where only punch data changed.
@@ -291,7 +294,7 @@ export default function PracticeScreen() {
       acc.leftSnap = {
         speed: hw.l_speed ?? 0,
         force: hw.l_force_n ?? 0,
-        punchCnt: hw.l_punch_cnt ?? 0,
+        punchCnt: lPunchCnt,
         bestSpd: hw.l_best_spd ?? 0,
         bestFrc: hw.l_best_frc ?? 0,
         punchType: hw.l_punch_type ?? '',
@@ -299,7 +302,7 @@ export default function PracticeScreen() {
       acc.rightSnap = {
         speed: hw.r_speed ?? 0,
         force: hw.r_force_n ?? 0,
-        punchCnt: hw.r_punch_cnt ?? 0,
+        punchCnt: rPunchCnt,
         bestSpd: hw.r_best_spd ?? 0,
         bestFrc: hw.r_best_frc ?? 0,
         punchType: hw.r_punch_type ?? '',
@@ -408,6 +411,9 @@ export default function PracticeScreen() {
     currentRoundAcc.current = emptyAcc(new Date());
     roundReadingsRef.current = [];  // clear CSV readings for new session
     setIsRecording(true);
+
+    initialLeftPunchCntRef.current = latestHwRef.current?.l_punch_cnt ?? 0;
+    initialRightPunchCntRef.current = latestHwRef.current?.r_punch_cnt ?? 0;
 
     startSession({ totalRounds: rounds, roundDuration, restDuration });
   }, [rounds, roundDuration, restDuration, startSession]);
@@ -576,12 +582,31 @@ export default function PracticeScreen() {
       Alert.alert('Error', 'Could not read the file contents.');
     }
   }, []);
+
+  // ── Share a saved CSV file ──────────────────────────────────────────────
+  const handleShareFile = useCallback(async (file: SavedCsvFile) => {
+    try {
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (isAvailable) {
+        await Sharing.shareAsync(`file://${file.path}`, {
+          mimeType: 'text/csv',
+          dialogTitle: 'Download or Share CSV File',
+        });
+      } else {
+        Alert.alert('Sharing is not available on your device');
+      }
+    } catch (e) {
+      console.error('Failed to share file:', e);
+      Alert.alert('Error', 'Could not share the file.');
+    }
+  }, []);
+
   // ── Live display values ───────────────────────────────────────────────────
   const hw = hardwareData as any;
   const dispLeft: GloveStats = {
     speed: hw.l_speed ?? 0,
     force: hw.l_force_n ?? 0,
-    punchCnt: hw.l_punch_cnt ?? 0,
+    punchCnt: Math.max(0, (hw.l_punch_cnt ?? 0) - initialLeftPunchCntRef.current),
     bestSpd: hw.l_best_spd ?? 0,
     bestFrc: hw.l_best_frc ?? 0,
     punchType: hw.l_punch_type ?? '',
@@ -589,7 +614,7 @@ export default function PracticeScreen() {
   const dispRight: GloveStats = {
     speed: hw.r_speed ?? 0,
     force: hw.r_force_n ?? 0,
-    punchCnt: hw.r_punch_cnt ?? 0,
+    punchCnt: Math.max(0, (hw.r_punch_cnt ?? 0) - initialRightPunchCntRef.current),
     bestSpd: hw.r_best_spd ?? 0,
     bestFrc: hw.r_best_frc ?? 0,
     punchType: hw.r_punch_type ?? '',
@@ -819,8 +844,11 @@ export default function PracticeScreen() {
                     <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12 }}>
                       {/* <TouchableOpacity onPress={() => handlePreviewFile(file)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: theme.surfaceContainer, borderRadius: 6 }}>
                         <ThemedText style={{ color: THEME_COLOR, fontSize: 13, fontWeight: '600' }}>Preview</ThemedText>
+                      </TouchableOpacity> */}
+                      <TouchableOpacity onPress={() => handleShareFile(file)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#e0f2fe', borderRadius: 6 }}>
+                        <ThemedText style={{ color: '#0284c7', fontSize: 13, fontWeight: '600' }}>Download</ThemedText>
                       </TouchableOpacity>
-                      <TouchableOpacity onPress={() => handleDeleteFile(file.path)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#ffe4e6', borderRadius: 6 }}>
+                      {/* <TouchableOpacity onPress={() => handleDeleteFile(file.path)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#ffe4e6', borderRadius: 6 }}>
                         <ThemedText style={{ color: '#e11d48', fontSize: 13, fontWeight: '600' }}>Delete</ThemedText>
                       </TouchableOpacity> */}
                     </View>
@@ -911,9 +939,9 @@ export default function PracticeScreen() {
 
             <View style={[styles.configCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
               {[
-                { label: 'Rounds', val: rounds, set: setRounds, min: 1, max: 20, step: 1, display: String(rounds) },
+                { label: 'Rounds', val: rounds, set: setRounds, min: 1, max: 1, step: 1, display: String(rounds) },
                 { label: 'Round Duration', val: roundDuration, set: setRoundDuration, min: 30, max: 600, step: 30, display: fmt(roundDuration) },
-                { label: 'Rest Period', val: restDuration, set: setRestDuration, min: 10, max: 300, step: 10, display: fmt(restDuration) },
+                // { label: 'Rest Period', val: restDuration, set: setRestDuration, min: 10, max: 300, step: 10, display: fmt(restDuration) },
               ].map((cfg, i, arr) => (
                 <View key={cfg.label}>
                   <View style={[styles.configRow, styles.stepperRow]}>
@@ -972,10 +1000,10 @@ export default function PracticeScreen() {
                 borderWidth: 1,
                 borderColor: theme.danger,
               }}
-              onPress={isRecording ? handleEnd : handleStart}
+              onPress={handleStart}
             >
-              <ThemedText >
-                {isRecording ? '⏹ End Round' : '▶ Start Round'}
+              <ThemedText style={{ color: theme.text }}>
+                {'▶ Start Round'}
               </ThemedText>
             </TouchableOpacity>
           </ScrollView>
