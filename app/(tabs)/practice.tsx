@@ -16,7 +16,6 @@ import { useAppDispatch } from '@/store/hooks';
 import { dismissFatigueAlert } from '@/store/slices/practiceSlice';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useHardware } from '../../context/sethardware';
-import ConnectScreen from '.';
 import RNFS from 'react-native-fs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -740,8 +739,6 @@ export default function PracticeScreen() {
   // ═════════════════════════════════════════════════════════════════════════
 
   return (
-    <>
-      <ConnectScreen />
       <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
 
         {/* FEEDBACK MODAL */}
@@ -1014,7 +1011,6 @@ export default function PracticeScreen() {
           </View>
         )}
       </SafeAreaView>
-    </>
   );
 
 }
