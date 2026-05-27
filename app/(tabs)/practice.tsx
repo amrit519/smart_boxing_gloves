@@ -161,9 +161,9 @@ export default function PracticeScreen() {
   const [useMockData, setUseMockData] = useState(false);
 
   // ── Config ────────────────────────────────────────────────────────────────
-  const [rounds, setRounds] = useState(4);
-  const [roundDuration, setRoundDuration] = useState(180);
-  const [restDuration, setRestDuration] = useState(60);
+  const [rounds, setRounds] = useState(2);
+  const [roundDuration, setRoundDuration] = useState(60);
+  const [restDuration, setRestDuration] = useState(20);
 
   // ── View ──────────────────────────────────────────────────────────────────
   const [gloveView, setGloveView] = useState<'left' | 'both' | 'right'>('both');
@@ -751,7 +751,7 @@ export default function PracticeScreen() {
 
               <ThemedText style={{ marginBottom: 8, color: theme.secondary }}>Rating (1-10)</ThemedText>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 }}>
-                {[1, 3, 5, 7, 10].map(val => (
+                {[1,2,3,4,5,6,7,8,9,10].map(val => (
                   <TouchableOpacity
                     key={val}
                     style={{
@@ -765,7 +765,7 @@ export default function PracticeScreen() {
                 ))}
               </View>
 
-              <ThemedText style={{ marginBottom: 8, color: theme.secondary }}>Comment</ThemedText>
+              <ThemedText style={{ marginBottom: 8, color: theme.secondary }}>Comment ( Area of Improvement )</ThemedText>
               <TextInput
                 style={{
                   backgroundColor: theme.surfaceContainer, color: theme.text,
@@ -782,10 +782,10 @@ export default function PracticeScreen() {
                 style={{ backgroundColor: THEME_COLOR, padding: 16, borderRadius: 12, alignItems: 'center' }}
                 onPress={handleFeedbackSubmit}
               >
-                <ThemedText style={{ color: '#fff', fontWeight: 'bold' }}>Save CSV & Continue</ThemedText>
+                <ThemedText style={{ color: '#fff', fontWeight: 'bold' }}>Go</ThemedText>
               </TouchableOpacity>
 
-              <TouchableOpacity
+              {/* <TouchableOpacity
                 style={{ marginTop: 12, padding: 12, alignItems: 'center' }}
                 onPress={() => {
                   setShowFeedbackModal(false);
@@ -793,7 +793,7 @@ export default function PracticeScreen() {
                 }}
               >
                 <ThemedText style={{ color: theme.danger }}>Skip (Don't Save)</ThemedText>
-              </TouchableOpacity>
+              </TouchableOpacity> */}
             </View>
           </View>
         </Modal>
@@ -817,12 +817,12 @@ export default function PracticeScreen() {
                     <ThemedText style={{ fontSize: 12, color: theme.secondary, marginBottom: 12 }}>{new Date(file.date).toLocaleString()}</ThemedText>
 
                     <View style={{ flexDirection: 'row', justifyContent: 'flex-end', gap: 12 }}>
-                      <TouchableOpacity onPress={() => handlePreviewFile(file)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: theme.surfaceContainer, borderRadius: 6 }}>
+                      {/* <TouchableOpacity onPress={() => handlePreviewFile(file)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: theme.surfaceContainer, borderRadius: 6 }}>
                         <ThemedText style={{ color: THEME_COLOR, fontSize: 13, fontWeight: '600' }}>Preview</ThemedText>
                       </TouchableOpacity>
                       <TouchableOpacity onPress={() => handleDeleteFile(file.path)} style={{ paddingVertical: 6, paddingHorizontal: 12, backgroundColor: '#ffe4e6', borderRadius: 6 }}>
                         <ThemedText style={{ color: '#e11d48', fontSize: 13, fontWeight: '600' }}>Delete</ThemedText>
-                      </TouchableOpacity>
+                      </TouchableOpacity> */}
                     </View>
                   </View>
                 ))
