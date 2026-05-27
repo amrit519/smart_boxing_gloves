@@ -12,8 +12,7 @@ import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.load
 import com.facebook.react.defaults.DefaultReactNativeHost
 import com.facebook.react.soloader.OpenSourceMergedSoMapping
 import com.facebook.soloader.SoLoader
-import com.rahulshahz.Toynovate.HandLandmarksPackage
-import com.rahulshahz.Toynovate.handlandmarksframeprocessor.HandLandmarksFrameProcessorPluginPackage
+
 import expo.modules.ApplicationLifecycleDispatcher
 import expo.modules.ReactNativeHostWrapper
 
@@ -26,8 +25,6 @@ class MainApplication : Application(), ReactApplication {
             val packages = PackageList(this).packages
             // Packages that cannot be autolinked yet can be added manually here, for example:
             // packages.add(new MyReactNativePackage());
-            packages.add(HandLandmarksFrameProcessorPluginPackage())
-            packages.add(HandLandmarksPackage())
             return packages
           }
 

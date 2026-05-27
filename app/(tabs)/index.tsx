@@ -56,11 +56,11 @@ export default function ConnectScreen() {
   const { setHardwareData } = useHardware();
 
   // ── Init DB on mount ──────────────────────────────────────────────────────
-  useEffect(() => {
-    initDatabase();
-    currentSessionId.current = startSession();
-    console.log('DB ready. Session:', currentSessionId.current);
-  }, []);
+  // useEffect(() => {
+  //   initDatabase();
+  //   currentSessionId.current = startSession();
+  //   console.log('DB ready. Session:', currentSessionId.current);
+  // }, []);
 
   // ── BLE monitor — starts when device connects ─────────────────────────────
   useEffect(() => {
